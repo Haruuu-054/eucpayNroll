@@ -895,8 +895,8 @@ function enrollmentbilling(supabase, logger) {
       // If already completed, just redirect (idempotency)
       if (payment.status === "Completed") {
         logger.info("Payment already completed", { payment_id });
-        return res.redirect(
-          `${FRONTEND_URL}/student/payment?status=success&payment_id=${payment_id}`
+        res.redirect(
+          `${FRONTEND_URL}/payment.html?status=success&payment_id=${payment_id}`
         );
       }
 
@@ -1353,3 +1353,4 @@ function enrollmentbilling(supabase, logger) {
 module.exports = enrollmentbilling;
 module.exports.handleEnrollmentPayment = handleEnrollmentPayment;
 module.exports.generateBilling = generateBilling; // ✅ NOW EXPORTED
+

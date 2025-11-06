@@ -1,0 +1,6 @@
+first_name,last_name,dob,email,role_name,program_id,department_id,year_level,admission_year,semester_id,scheme_id,is_continuing,student_id
+,,,,,,,,,,,,
+Mark,Reyes,22/05/2002,mark.reyes@example.com,Student,1,2,3,2022,2,1,TRUE,A22-0012
+Liza,Garcia,10/01/2004,liza.garcia@example.com,Student,1,2,1,2024,1,2,FALSE,A24-0001
+James,Torres,30/11/2003,james.torres@example.com,Student,1,2,2,2023,1,1,TRUE,A23-0007
+Maya,Cruz,05/07/2002,maya.cruz@example.com,Student,1,2,4,2021,2,1,TRUE,A21-0020

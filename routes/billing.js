@@ -547,280 +547,303 @@ function enrollmentbilling(supabase, logger) {
   // CREATE PAYMENT CHECKOUT
   // ============================================
   router.post("/create-checkout", async (req, res) => {
-    try {
-      const { enrollment_id, created_by } = req.body;
+  try {
+    const { enrollment_id, created_by, custom_amount } = req.body;  // ✅ Extract custom_amount
 
-      if (!enrollment_id) {
-        return res.status(400).json({
-          error: "Enrollment ID is required",
-        });
-      }
-
-      logger.info("Creating payment checkout", {
-        enrollment_id,
-        paymongo_enabled: PAYMONGO_ENABLED,
+    if (!enrollment_id) {
+      return res.status(400).json({
+        error: "Enrollment ID is required",
       });
+    }
 
-      // 1. Get enrollment with scheme details
-      const { data: enrollment, error: enrollmentError } = await supabase
-        .from("enrollments")
-        .select(
-          `
-          enrollment_id,
-          student_id,
-          semester_id,
-          scheme_id,
-          tuition_schemes (
-            scheme_id,
-            scheme_name,
-            scheme_type,
-            amount,
-            downpayment,
-            monthly_payment,
-            months
-          )
+    logger.info("Creating payment checkout", {
+      enrollment_id,
+      custom_amount,
+      paymongo_enabled: PAYMONGO_ENABLED,
+    });
+
+    // 1. Get enrollment with scheme details
+    const { data: enrollment, error: enrollmentError } = await supabase
+      .from("enrollments")
+      .select(
         `
+        enrollment_id,
+        student_id,
+        semester_id,
+        scheme_id,
+        tuition_schemes (
+          scheme_id,
+          scheme_name,
+          scheme_type,
+          amount,
+          downpayment,
+          monthly_payment,
+          months
         )
-        .eq("enrollment_id", enrollment_id)
-        .single();
+      `
+      )
+      .eq("enrollment_id", enrollment_id)
+      .single();
 
-      if (enrollmentError || !enrollment) {
-        logger.error("Enrollment not found", {
-          error: enrollmentError?.message,
-        });
-        return res.status(404).json({ error: "Enrollment not found" });
+    if (enrollmentError || !enrollment) {
+      logger.error("Enrollment not found", {
+        error: enrollmentError?.message,
+      });
+      return res.status(404).json({ error: "Enrollment not found" });
+    }
+
+    const scheme = enrollment.tuition_schemes;
+    const student_id = enrollment.student_id;
+
+    // 2. Get student account
+    const { data: account, error: accountError } = await supabase
+      .from("accounts")
+      .select("account_id, total_balance")
+      .eq("student_id", student_id)
+      .maybeSingle();
+
+    if (accountError) {
+      logger.error("Error fetching account", { error: accountError.message });
+      return res.status(400).json({ error: accountError.message });
+    }
+
+    if (!account) {
+      return res.status(400).json({
+        error: "Account not found. Please generate billing first.",
+      });
+    }
+
+    const account_id = account.account_id;
+
+    // 3. Determine what to pay based on scheme
+    let amount;
+    let description;
+    let payment_type;
+
+    if (scheme.scheme_type === "full_payment") {
+      // ===== SCHEME 1: FULL PAYMENT =====
+      const { data: fees, error: feesError } = await supabase
+        .from("enrollment_fees")
+        .select("amount")
+        .eq("enrollment_id", enrollment_id)
+        .eq("is_paid", false);
+
+      if (feesError) {
+        logger.error("Error fetching fees", { error: feesError.message });
+        return res.status(400).json({ error: feesError.message });
       }
 
-      const scheme = enrollment.tuition_schemes;
-      const student_id = enrollment.student_id;
+      if (!fees || fees.length === 0) {
+        return res.status(400).json({
+          error:
+            "No unpaid fees found. All payments completed or billing not generated.",
+        });
+      }
 
-      // 2. Get student account
-      const { data: account, error: accountError } = await supabase
-        .from("accounts")
-        .select("account_id, total_balance")
-        .eq("student_id", student_id)
+      // ✅ For full payment, force the full amount (no customization)
+      amount = fees.reduce((sum, fee) => sum + parseFloat(fee.amount), 0);
+      description = `Full Payment - ${scheme.scheme_name}`;
+      payment_type = "full_payment";
+      
+    } else if (scheme.scheme_type === "installment") {
+      // ===== SCHEME 2 & 3: INSTALLMENT PLANS =====
+
+      // Check if downpayment is paid
+      const { data: downpaymentFee } = await supabase
+        .from("enrollment_fees")
+        .select("fee_id, amount, is_paid")
+        .eq("enrollment_id", enrollment_id)
+        .eq("fee_type", "Downpayment")
         .maybeSingle();
 
-      if (accountError) {
-        logger.error("Error fetching account", { error: accountError.message });
-        return res.status(400).json({ error: accountError.message });
-      }
-
-      if (!account) {
+      if (!downpaymentFee) {
         return res.status(400).json({
-          error: "Account not found. Please generate billing first.",
+          error: "Billing not generated. Please generate billing first.",
         });
       }
 
-      const account_id = account.account_id;
-
-      // 3. Determine what to pay based on scheme
-      let amount;
-      let description;
-      let payment_type;
-
-      if (scheme.scheme_type === "full_payment") {
-        // ===== SCHEME 1: FULL PAYMENT =====
-        const { data: fees, error: feesError } = await supabase
-          .from("enrollment_fees")
-          .select("amount")
+      if (!downpaymentFee.is_paid) {
+        // ✅ FORCE DOWNPAYMENT - No custom amount allowed
+        amount = parseFloat(downpaymentFee.amount);
+        description = `Downpayment - ${scheme.scheme_name}`;
+        payment_type = "downpayment";
+        
+        logger.info("Downpayment required (forced)", {
+          required_amount: amount,
+          custom_amount_ignored: custom_amount || "none"
+        });
+        
+      } else {
+        // ✅ DOWNPAYMENT PAID - Allow custom amounts for installments
+        
+        // Get next installment info for reference
+        const { data: installment, error: installmentError } = await supabase
+          .from("payment_installments")
+          .select("installment_id, installment_number, amount")
           .eq("enrollment_id", enrollment_id)
-          .eq("is_paid", false);
-
-        if (feesError) {
-          logger.error("Error fetching fees", { error: feesError.message });
-          return res.status(400).json({ error: feesError.message });
-        }
-
-        if (!fees || fees.length === 0) {
-          return res.status(400).json({
-            error:
-              "No unpaid fees found. All payments completed or billing not generated.",
-          });
-        }
-
-        amount = fees.reduce((sum, fee) => sum + parseFloat(fee.amount), 0);
-        description = `Full Payment - ${scheme.scheme_name}`;
-        payment_type = "full_payment";
-      } else if (scheme.scheme_type === "installment") {
-        // ===== SCHEME 2 & 3: INSTALLMENT PLANS =====
-
-        // Check if downpayment is paid
-        const { data: downpaymentFee } = await supabase
-          .from("enrollment_fees")
-          .select("fee_id, amount, is_paid")
-          .eq("enrollment_id", enrollment_id)
-          .eq("fee_type", "Downpayment")
+          .eq("status", "pending")
+          .order("installment_number", { ascending: true })
+          .limit(1)
           .maybeSingle();
 
-        if (!downpaymentFee) {
+        if (installmentError || !installment) {
           return res.status(400).json({
-            error: "Billing not generated. Please generate billing first.",
+            error: "No pending installments found. All payments completed.",
           });
         }
 
-        if (!downpaymentFee.is_paid) {
-          // Pay downpayment first
-          amount = parseFloat(downpaymentFee.amount);
-          description = `Downpayment - ${scheme.scheme_name}`;
-          payment_type = "downpayment";
-        } else {
-          // Downpayment paid, get next installment
-          const { data: installment, error: installmentError } = await supabase
-            .from("payment_installments")
-            .select("installment_id, installment_number, amount")
-            .eq("enrollment_id", enrollment_id)
-            .eq("status", "pending")
-            .order("installment_number", { ascending: true })
-            .limit(1)
-            .maybeSingle();
-
-          if (installmentError || !installment) {
+        // ✅ Use custom amount if provided, otherwise use installment amount
+        if (custom_amount) {
+          const customAmountValue = parseFloat(custom_amount);
+          
+          // Validate custom amount
+          if (isNaN(customAmountValue) || customAmountValue <= 0) {
             return res.status(400).json({
-              error: "No pending installments found. All payments completed.",
+              error: "Invalid payment amount. Amount must be greater than 0.",
             });
           }
 
+          if (customAmountValue > account.total_balance) {
+            return res.status(400).json({
+              error: `Amount exceeds your balance of ₱${account.total_balance.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+            });
+          }
+
+          amount = customAmountValue;
+          
+          // Check if paying exact installment amount
+          const isExactInstallment = Math.abs(customAmountValue - parseFloat(installment.amount)) < 0.01;
+          
+          if (isExactInstallment) {
+            description = `Installment ${installment.installment_number}/${scheme.months} - ${scheme.scheme_name}`;
+            payment_type = "installment";
+          } else {
+            description = `Custom Payment - ${scheme.scheme_name}`;
+            payment_type = "custom_payment";
+          }
+          
+          logger.info("Custom amount accepted for installment", {
+            custom_amount: amount,
+            suggested_installment: parseFloat(installment.amount),
+            is_exact_installment: isExactInstallment,
+            remaining_balance: account.total_balance
+          });
+          
+        } else {
+          // No custom amount - use default installment amount
           amount = parseFloat(installment.amount);
           description = `Installment ${installment.installment_number}/${scheme.months} - ${scheme.scheme_name}`;
           payment_type = "installment";
+          
+          logger.info("Using default installment amount", {
+            installment_number: installment.installment_number,
+            amount: amount
+          });
         }
-      } else {
-        return res.status(400).json({
-          error: "Invalid scheme type",
-        });
       }
+    } else {
+      return res.status(400).json({
+        error: "Invalid scheme type",
+      });
+    }
 
-      // Validate amount
-      amount = Math.round(amount * 100) / 100;
-      if (!amount || amount <= 0) {
-        return res.status(400).json({
-          error: "Invalid payment amount",
-        });
-      }
+    // Validate amount
+    amount = Math.round(amount * 100) / 100;
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        error: "Invalid payment amount",
+      });
+    }
 
-      // 4. Create payment record with idempotency key
-      const idempotency_key = `${enrollment_id}-${payment_type}-${Date.now()}`;
+    // 4. Create payment record with idempotency key
+    const idempotency_key = `${enrollment_id}-${payment_type}-${Date.now()}`;
 
-      const { data: payment, error: paymentError } = await supabase
-        .from("payments")
-        .insert([
-          {
-            account_id,
-            enrollment_id,
-            amount,
-            status: "Pending",
-            payment_type,
-            for_semester_id: enrollment.semester_id,
-            created_by,
-            payment_date: new Date().toISOString(),
-            idempotency_key,
-          },
-        ])
-        .select()
-        .single();
+    const { data: payment, error: paymentError } = await supabase
+      .from("payments")
+      .insert([
+        {
+          account_id,
+          enrollment_id,
+          amount,
+          status: "Pending",
+          payment_type,
+          for_semester_id: enrollment.semester_id,
+          created_by,
+          payment_date: new Date().toISOString(),
+          idempotency_key,
+        },
+      ])
+      .select()
+      .single();
 
-      if (paymentError) {
-        logger.error("Error creating payment", { error: paymentError.message });
-        return res.status(400).json({ error: paymentError.message });
-      }
+    if (paymentError) {
+      logger.error("Error creating payment", { error: paymentError.message });
+      return res.status(400).json({ error: paymentError.message });
+    }
 
-      const payment_id = payment.payment_id;
+    const payment_id = payment.payment_id;
 
-      // 5. Create PayMongo checkout OR mock checkout
-      let checkout_url;
-      let checkout_id;
+    // 5. Create PayMongo checkout OR mock checkout
+    let checkout_url;
+    let checkout_id;
 
-      if (PAYMONGO_ENABLED && PAYMONGO_SECRET_KEY) {
-        // ===== ONLINE MODE: Use real PayMongo =====
-        try {
-          const axios = require("axios");
-          const amountInCentavos = Math.round(amount * 100);
+    if (PAYMONGO_ENABLED && PAYMONGO_SECRET_KEY) {
+      // ===== ONLINE MODE: Use real PayMongo =====
+      try {
+        const axios = require("axios");
+        const amountInCentavos = Math.round(amount * 100);
 
-          const checkoutData = {
-            data: {
-              attributes: {
-                send_email_receipt: true,
-                show_description: true,
-                show_line_items: true,
-                line_items: [
-                  {
-                    currency: "PHP",
-                    amount: amountInCentavos,
-                    description: description,
-                    name: description,
-                    quantity: 1,
-                  },
-                ],
-                payment_method_types: ["gcash", "paymaya", "card", "grab_pay"],
-                success_url: `${BASE_URL}/api/enrollment-billing/payment/success?payment_id=${payment_id}`,
-                cancel_url: `${BASE_URL}/api/enrollment-billing/payment/cancel?payment_id=${payment_id}`,
-                description: description,
-                metadata: {
-                  payment_id: payment_id.toString(),
-                  enrollment_id: enrollment_id.toString(),
-                  student_id: student_id.toString(),
-                  payment_type: payment_type,
-                  payment_category: "enrollment",
-                  scheme_id: scheme.scheme_id.toString(),
-                  account_id: account_id.toString(),
-                  idempotency_key: idempotency_key,
+        const checkoutData = {
+          data: {
+            attributes: {
+              send_email_receipt: true,
+              show_description: true,
+              show_line_items: true,
+              line_items: [
+                {
+                  currency: "PHP",
+                  amount: amountInCentavos,
+                  description: description,
+                  name: description,
+                  quantity: 1,
                 },
+              ],
+              payment_method_types: ["gcash", "paymaya", "card", "grab_pay"],
+              success_url: `${BASE_URL}/api/enrollment-billing/payment/success?payment_id=${payment_id}`,
+              cancel_url: `${BASE_URL}/api/enrollment-billing/payment/cancel?payment_id=${payment_id}`,
+              description: description,
+              metadata: {
+                payment_id: payment_id.toString(),
+                enrollment_id: enrollment_id.toString(),
+                student_id: student_id.toString(),
+                payment_type: payment_type,
+                payment_category: "enrollment",
+                scheme_id: scheme.scheme_id.toString(),
+                account_id: account_id.toString(),
+                idempotency_key: idempotency_key,
               },
             },
-          };
+          },
+        };
 
-          const checkoutResponse = await axios.post(
-            "https://api.paymongo.com/v1/checkout_sessions",
-            checkoutData,
-            {
-              headers: {
-                Authorization: `Basic ${Buffer.from(
-                  PAYMONGO_SECRET_KEY
-                ).toString("base64")}`,
-                "Content-Type": "application/json",
-              },
-            }
-          );
-
-          const checkoutSession = checkoutResponse.data.data;
-          checkout_url = checkoutSession.attributes.checkout_url;
-          checkout_id = checkoutSession.id;
-
-          // Save PayMongo transaction
-          await supabase.from("payment_transactions").insert([
-            {
-              payment_id,
-              paymongo_payment_id: checkout_id,
-              amount,
-              currency: "PHP",
-              status: "pending",
-              checkout_url,
-              expires_at: new Date(
-                Date.now() + CHECKOUT_EXPIRY_HOURS * 60 * 60 * 1000
-              ).toISOString(),
+        const checkoutResponse = await axios.post(
+          "https://api.paymongo.com/v1/checkout_sessions",
+          checkoutData,
+          {
+            headers: {
+              Authorization: `Basic ${Buffer.from(
+                PAYMONGO_SECRET_KEY
+              ).toString("base64")}`,
+              "Content-Type": "application/json",
             },
-          ]);
+          }
+        );
 
-          logger.info("Created PayMongo checkout", {
-            payment_id,
-            checkout_id,
-          });
-        } catch (error) {
-          logger.error("PayMongo error", {
-            error: error.response?.data || error.message,
-          });
-          return res.status(500).json({
-            error: "Payment gateway error",
-            details: error.response?.data?.errors?.[0]?.detail || error.message,
-          });
-        }
-      } else {
-        // ===== OFFLINE MODE: Mock checkout for local testing =====
-        checkout_url = `${BASE_URL}/payment/mock-checkout?payment_id=${payment_id}`;
-        checkout_id = `mock_checkout_${payment_id}_${Date.now()}`;
+        const checkoutSession = checkoutResponse.data.data;
+        checkout_url = checkoutSession.attributes.checkout_url;
+        checkout_id = checkoutSession.id;
 
-        // Save mock transaction
+        // Save PayMongo transaction
         await supabase.from("payment_transactions").insert([
           {
             payment_id,
@@ -835,35 +858,69 @@ function enrollmentbilling(supabase, logger) {
           },
         ]);
 
-        logger.info("Created OFFLINE mock checkout", {
+        logger.info("Created PayMongo checkout", {
           payment_id,
           checkout_id,
         });
+      } catch (error) {
+        logger.error("PayMongo error", {
+          error: error.response?.data || error.message,
+        });
+        return res.status(500).json({
+          error: "Payment gateway error",
+          details: error.response?.data?.errors?.[0]?.detail || error.message,
+        });
       }
+    } else {
+      // ===== OFFLINE MODE: Mock checkout for local testing =====
+      checkout_url = `${BASE_URL}/payment/mock-checkout?payment_id=${payment_id}`;
+      checkout_id = `mock_checkout_${payment_id}_${Date.now()}`;
 
-      res.json({
-        success: true,
+      // Save mock transaction
+      await supabase.from("payment_transactions").insert([
+        {
+          payment_id,
+          paymongo_payment_id: checkout_id,
+          amount,
+          currency: "PHP",
+          status: "pending",
+          checkout_url,
+          expires_at: new Date(
+            Date.now() + CHECKOUT_EXPIRY_HOURS * 60 * 60 * 1000
+          ).toISOString(),
+        },
+      ]);
+
+      logger.info("Created OFFLINE mock checkout", {
         payment_id,
-        checkout_url,
         checkout_id,
-        amount,
-        payment_type,
-        scheme_id: scheme.scheme_id,
-        scheme_name: scheme.scheme_name,
-        description,
-        is_mock: !PAYMONGO_ENABLED,
-        expires_at: new Date(
-          Date.now() + CHECKOUT_EXPIRY_HOURS * 60 * 60 * 1000
-        ),
       });
-    } catch (err) {
-      logger.error("Unexpected error creating checkout", {
-        error: err.message,
-        stack: err.stack,
-      });
-      res.status(500).json({ error: "Internal server error" });
     }
-  });
+
+    res.json({
+      success: true,
+      payment_id,
+      checkout_url,
+      checkout_id,
+      amount,
+      payment_type,
+      scheme_id: scheme.scheme_id,
+      scheme_name: scheme.scheme_name,
+      description,
+      is_mock: !PAYMONGO_ENABLED,
+      expires_at: new Date(
+        Date.now() + CHECKOUT_EXPIRY_HOURS * 60 * 60 * 1000
+      ),
+      is_custom_amount: payment_type === "custom_payment",
+    });
+  } catch (err) {
+    logger.error("Unexpected error creating checkout", {
+      error: err.message,
+      stack: err.stack,
+    });
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
   // ============================================
   // PAYMENT SUCCESS CALLBACK
@@ -1353,4 +1410,5 @@ function enrollmentbilling(supabase, logger) {
 module.exports = enrollmentbilling;
 module.exports.handleEnrollmentPayment = handleEnrollmentPayment;
 module.exports.generateBilling = generateBilling; // ✅ NOW EXPORTED
+
 

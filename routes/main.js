@@ -459,47 +459,67 @@ function createMainRouter(supabase, logger) {
 
       const passedSubjectIds = passedSubjects?.map((s) => s.subject_id) || [];
 
-      // **NEW: Step 2.5 - Calculate eligible year level based on completed subjects**
+      // **MODIFIED: Step 2.5 - Calculate eligible year level based on BOTH semesters completion**
       let eligibleYearLevel = student.year_level;
 
       if (passedSubjects && passedSubjects.length > 0) {
-        // Get all subjects for the student's program grouped by year level
+        // Get all subjects for the student's program grouped by year level and semester
         const { data: programSubjects } = await supabase
           .from("course_subjects")
-          .select("subject_id, year_level")
+          .select("subject_id, year_level, semester_id, semesters(semester_name)")
           .eq("program_id", student.program_id)
           .order("year_level", { ascending: true });
 
         if (programSubjects) {
-          // Group subjects by year level
-          const subjectsByYear = {};
+          // Group subjects by year level and semester
+          const subjectsByYearAndSemester = {};
           programSubjects.forEach((subject) => {
-            if (!subjectsByYear[subject.year_level]) {
-              subjectsByYear[subject.year_level] = [];
+            const year = subject.year_level;
+            const semesterName = subject.semesters?.semester_name;
+            
+            if (!subjectsByYearAndSemester[year]) {
+              subjectsByYearAndSemester[year] = {
+                "1st Semester": [],
+                "2nd Semester": [],
+                "Summer": []
+              };
             }
-            subjectsByYear[subject.year_level].push(subject.subject_id);
+            
+            if (semesterName && subjectsByYearAndSemester[year][semesterName]) {
+              subjectsByYearAndSemester[year][semesterName].push(subject.subject_id);
+            }
           });
 
-          // Find the highest year level where ALL subjects are completed
+          // Find the highest year level where ALL subjects (both 1st and 2nd semester) are completed
           let highestCompletedYear = 0;
-          for (const [yearLevel, subjectIds] of Object.entries(
-            subjectsByYear
-          )) {
+          for (const [yearLevel, semesters] of Object.entries(subjectsByYearAndSemester)) {
             const year = parseInt(yearLevel);
-            const allCompleted = subjectIds.every((id) =>
-              passedSubjectIds.includes(id)
-            );
-
-            if (allCompleted && year > highestCompletedYear) {
+            
+            // Check if both 1st and 2nd semester subjects are completed
+            const firstSemComplete = semesters["1st Semester"].length === 0 || 
+              semesters["1st Semester"].every((id) => passedSubjectIds.includes(id));
+            
+            const secondSemComplete = semesters["2nd Semester"].length === 0 || 
+              semesters["2nd Semester"].every((id) => passedSubjectIds.includes(id));
+            
+            // Summer is optional, so we don't require it for year completion
+            
+            // Year is only complete if BOTH regular semesters are done
+            if (firstSemComplete && secondSemComplete && year > highestCompletedYear) {
               highestCompletedYear = year;
             }
           }
 
-          // If student completed all subjects of their current year or higher, advance them
+          // Only advance year level if student completed BOTH semesters of their current year
           if (highestCompletedYear >= student.year_level) {
             eligibleYearLevel = highestCompletedYear + 1;
             logger.info("✓ Student eligible for next year level", {
               completed_year: highestCompletedYear,
+              eligible_year: eligibleYearLevel,
+            });
+          } else {
+            logger.info("✓ Student remains in current year level", {
+              current_year: student.year_level,
               eligible_year: eligibleYearLevel,
             });
           }
@@ -532,7 +552,7 @@ function createMainRouter(supabase, logger) {
 
       // Step 4: Determine next semester
       let nextSemester = null;
-      let nextYearLevel = eligibleYearLevel; // **CHANGED: Use calculated eligible year level**
+      let nextYearLevel = eligibleYearLevel;
       let nextSemesterId = null;
 
       if (lastCompletedEnrollment?.semester_id) {
@@ -560,7 +580,9 @@ function createMainRouter(supabase, logger) {
             if (secondSemester) {
               nextSemester = secondSemester;
               nextSemesterId = secondSemester.semester_id;
-              logger.info("✓ Next: 2nd Semester", {
+              // Stay in same year level when moving from 1st to 2nd semester
+              nextYearLevel = student.year_level;
+              logger.info("✓ Next: 2nd Semester (same year level)", {
                 semester_id: nextSemesterId,
                 year_level: nextYearLevel,
               });
@@ -577,6 +599,8 @@ function createMainRouter(supabase, logger) {
             if (summerSemester) {
               nextSemester = summerSemester;
               nextSemesterId = summerSemester.semester_id;
+              // Stay in same year level for summer
+              nextYearLevel = student.year_level;
             } else {
               // No summer, go to next year's 1st semester
               const { data: nextYearFirstSem } = await supabase
@@ -591,6 +615,8 @@ function createMainRouter(supabase, logger) {
               if (nextYearFirstSem) {
                 nextSemester = nextYearFirstSem;
                 nextSemesterId = nextYearFirstSem.semester_id;
+                // Use eligibleYearLevel here (which may have advanced)
+                nextYearLevel = eligibleYearLevel;
                 logger.info("✓ Next: New Year 1st Semester", {
                   semester_id: nextSemesterId,
                   year_level: nextYearLevel,
@@ -610,6 +636,8 @@ function createMainRouter(supabase, logger) {
             if (nextYearFirstSem) {
               nextSemester = nextYearFirstSem;
               nextSemesterId = nextYearFirstSem.semester_id;
+              // Use eligibleYearLevel after summer
+              nextYearLevel = eligibleYearLevel;
             }
           }
         }
@@ -674,7 +702,7 @@ function createMainRouter(supabase, logger) {
         eligibleSubjects?.filter(
           (subject) =>
             subject.semester_id === nextSemesterId &&
-            subject.year_level === nextYearLevel // **CHANGED: Use calculated year level**
+            subject.year_level === nextYearLevel
         ) || [];
 
       logger.info("Filtered for next enrollment", {
@@ -803,7 +831,7 @@ function createMainRouter(supabase, logger) {
           student_id: student.student_id,
           name: `${student.first_name} ${student.last_name}`,
           current_year_level: student.year_level,
-          next_year_level: nextYearLevel, // **This will now show 2 for your student**
+          next_year_level: nextYearLevel,
           program_id: student.program_id,
         },
         progress: {

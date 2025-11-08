@@ -73,6 +73,7 @@ const semestersRouter = createSemestersRouter(supabase, logger);
 const enrolledStudentsRouter = createEnrolledStudentsRouter(supabase, logger);
 
 const tuitionnotifsRouter = require('./routes/tuitionremind');
+const scheduleRoutes = require('./routes/schedules');
 
 
 const app = express();
@@ -125,7 +126,7 @@ app.use('/api/enrollments', enrollmentRouter);
 app.use("/semesters", semestersRouter);
 app.use("/api/enrolled-students", enrolledStudentsRouter);
 app.use("/subjects", subjectsrouter(supabase));
-app.use("/api/schedules", createSchedulesRouter(supabase));
+//app.use("/api/schedules", createSchedulesRouter(supabase));
 app.use("/api/courses", createCoursesRouter(supabase));
 app.use('/create', createEnrollmentProcessRouter);
 app.use('/enrollment-status', enrollmentstatus(supabase, logger));
@@ -161,6 +162,8 @@ const testRoutes = require('./routes/testremind');
 app.use('/api/test', testRoutes);
 
 app.use('/api/student-notifications', tuitionnotifsRouter(supabase, logger));
+app.use('/api/schedules', scheduleRoutes);
+app.use('/instructors', createUsersRouter(supabase, logger));
 
 // ============================================
 // PAYMENT SUCCESS/CANCEL HANDLERS

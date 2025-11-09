@@ -5,6 +5,7 @@ class ScheduleController {
   /**
    * POST /api/schedules/create
    * Create schedule manually (2 steps)
+   * Now includes semester_id (defaults to active semester if not provided)
    */
   async createSchedule(req, res) {
     try {
@@ -18,6 +19,7 @@ class ScheduleController {
         room,
         teacherId,
         days,
+        semesterId, // Optional: defaults to active semester
         skipConflictCheck
       } = req.body;
       
@@ -37,6 +39,13 @@ class ScheduleController {
         });
       }
       
+      // Get active semester if not provided
+      let targetSemesterId = semesterId;
+      if (!targetSemesterId) {
+        const activeSemester = await scheduleService.getActiveSemester();
+        targetSemesterId = activeSemester.semester_id;
+      }
+      
       // Check for conflicts (unless skipped)
       if (!skipConflictCheck) {
         const conflicts = await scheduleService.checkConflicts(
@@ -45,7 +54,8 @@ class ScheduleController {
           startTime,
           endTime,
           programId,
-          yearLevel
+          yearLevel,
+          targetSemesterId
         );
         
         if (conflicts.length > 0) {
@@ -66,7 +76,8 @@ class ScheduleController {
         startTime,
         endTime,
         room,
-        teacherId
+        teacherId,
+        semesterId: targetSemesterId
       });
       
       // Step 2: Insert days
@@ -108,6 +119,7 @@ class ScheduleController {
         room,
         teacherId,
         days,
+        semesterId,
         skipConflictCheck
       } = req.body;
       
@@ -137,7 +149,8 @@ class ScheduleController {
           endTime || existingSchedule.end_time,
           programId || existingSchedule.program_id,
           yearLevel || existingSchedule.year_level,
-          id
+          semesterId || existingSchedule.semester_id,
+          id // Exclude current schedule
         );
         
         if (conflicts.length > 0) {
@@ -158,7 +171,8 @@ class ScheduleController {
         startTime,
         endTime,
         room,
-        teacherId
+        teacherId,
+        semesterId
       });
       
       // Step 2: Update days if provided
@@ -191,7 +205,7 @@ class ScheduleController {
    */
   async checkConflicts(req, res) {
     try {
-      const { room, days, startTime, endTime, programId, yearLevel, excludeScheduleId } = req.body;
+      const { room, days, startTime, endTime, programId, yearLevel, semesterId, excludeScheduleId } = req.body;
       
       if (!room || !days || !startTime || !endTime) {
         return res.status(400).json({
@@ -207,6 +221,13 @@ class ScheduleController {
         });
       }
       
+      // Get active semester if not provided
+      let targetSemesterId = semesterId;
+      if (!targetSemesterId) {
+        const activeSemester = await scheduleService.getActiveSemester();
+        targetSemesterId = activeSemester.semester_id;
+      }
+      
       const conflicts = await scheduleService.checkConflicts(
         room,
         days,
@@ -214,6 +235,7 @@ class ScheduleController {
         endTime,
         programId,
         yearLevel,
+        targetSemesterId,
         excludeScheduleId
       );
       
@@ -237,6 +259,7 @@ class ScheduleController {
   /**
    * GET /api/schedules/search
    * Search schedules with filters
+   * Now supports semester filtering (defaults to active semester)
    */
   async searchSchedules(req, res) {
     try {
@@ -245,7 +268,8 @@ class ScheduleController {
         programId: req.query.programId,
         yearLevel: req.query.yearLevel,
         room: req.query.room,
-        teacherId: req.query.teacherId
+        teacherId: req.query.teacherId,
+        semesterId: req.query.semesterId // Optional: defaults to active semester
       };
       
       const schedules = await scheduleService.searchSchedules(filters);
@@ -327,6 +351,29 @@ class ScheduleController {
       return res.status(500).json({
         success: false,
         message: 'Failed to delete schedule',
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * GET /api/schedules/semesters/active
+   * Get the active semester
+   */
+  async getActiveSemester(req, res) {
+    try {
+      const activeSemester = await scheduleService.getActiveSemester();
+      
+      return res.status(200).json({
+        success: true,
+        data: activeSemester
+      });
+      
+    } catch (error) {
+      console.error('Error getting active semester:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to get active semester',
         error: error.message
       });
     }

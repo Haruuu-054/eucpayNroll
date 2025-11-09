@@ -9,26 +9,95 @@ const supabase = createClient(
 class ScheduleService {
 
     /**
-     * Check for schedule conflicts
+     * Get active semester
      */
-    async checkConflicts(room, days, startTime, endTime, programId, yearLevel) {
+    async getActiveSemester() {
         try {
-            // Call the PostgreSQL function
-            const { data, error } = await supabase.rpc('check_schedule_conflicts', {
-                p_room: room,
-                p_days: days,
-                p_start_time: startTime,
-                p_end_time: endTime,
-                p_program_id: programId,
-                p_year_level: yearLevel
-            });
+            const { data, error } = await supabase
+                .from('semesters')
+                .select('semester_id, semester_name, school_year')
+                .order('start_date', { ascending: false })
+                .limit(1)
+                .single();
+
+            if (error) {
+                console.error('Error fetching active semester:', error);
+                throw error;
+            }
+
+            return data;
+        } catch (error) {
+            console.error('Error in getActiveSemester:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Check for schedule conflicts
+     * Now includes semester_id to only check conflicts within the same semester
+     */
+    async checkConflicts(room, days, startTime, endTime, programId, yearLevel, semesterId, excludeScheduleId = null) {
+        try {
+            // Build query to check for overlapping schedules
+            let query = supabase
+                .from('course_schedules')
+                .select(`
+                    schedule_id,
+                    room,
+                    start_time,
+                    end_time,
+                    course_subjects (
+                        subject_name
+                    ),
+                    schedule_day_mapping (
+                        day_of_week
+                    )
+                `)
+                .eq('room', room)
+                .eq('semester_id', semesterId);
+
+            // Exclude current schedule if updating
+            if (excludeScheduleId) {
+                query = query.neq('schedule_id', excludeScheduleId);
+            }
+
+            const { data, error } = await query;
 
             if (error) {
                 console.error('Error checking conflicts:', error);
                 throw error;
             }
 
-            return data || [];
+            // Filter for time and day conflicts
+            const conflicts = [];
+            data.forEach(schedule => {
+                const scheduleDays = schedule.schedule_day_mapping?.map(d => d.day_of_week) || [];
+                const hasOverlappingDays = days.some(day => scheduleDays.includes(day));
+
+                if (hasOverlappingDays) {
+                    // Check time overlap
+                    const existingStart = schedule.start_time;
+                    const existingEnd = schedule.end_time;
+
+                    const isOverlapping = 
+                        (startTime >= existingStart && startTime < existingEnd) ||
+                        (endTime > existingStart && endTime <= existingEnd) ||
+                        (startTime <= existingStart && endTime >= existingEnd);
+
+                    if (isOverlapping) {
+                        conflicts.push({
+                            schedule_id: schedule.schedule_id,
+                            subject_name: schedule.course_subjects?.subject_name,
+                            room: schedule.room,
+                            start_time: existingStart,
+                            end_time: existingEnd,
+                            days: scheduleDays
+                        });
+                    }
+                }
+            });
+
+            return conflicts;
         } catch (error) {
             console.error('Error in checkConflicts:', error);
             throw error;
@@ -37,9 +106,17 @@ class ScheduleService {
 
     /**
      * Insert schedule (step 1)
+     * Now includes semester_id
      */
     async insertSchedule(scheduleData) {
         try {
+            // If no semester_id provided, get the active one
+            let semesterId = scheduleData.semesterId;
+            if (!semesterId) {
+                const activeSemester = await this.getActiveSemester();
+                semesterId = activeSemester.semester_id;
+            }
+
             const { data, error } = await supabase
                 .from('course_schedules')
                 .insert({
@@ -50,7 +127,8 @@ class ScheduleService {
                     start_time: scheduleData.startTime,
                     end_time: scheduleData.endTime,
                     room: scheduleData.room,
-                    teacher_id: scheduleData.teacherId
+                    teacher_id: scheduleData.teacherId,
+                    semester_id: semesterId
                 })
                 .select('schedule_id')
                 .single();
@@ -104,27 +182,32 @@ class ScheduleService {
             const { data, error } = await supabase
                 .from('course_schedules')
                 .select(`
-          schedule_id,
-          subject_id,
-          course_subjects (
-            subject_code,
-            subject_name
-          ),
-          program_id,
-          year_level,
-          batch,
-          start_time,
-          end_time,
-          room,
-          teacher_id,
-          teachers (
-            first_name,
-            last_name
-          ),
-          schedule_day_mapping (
-            day_of_week
-          )
-        `)
+                    schedule_id,
+                    subject_id,
+                    course_subjects (
+                        subject_code,
+                        subject_name
+                    ),
+                    program_id,
+                    year_level,
+                    batch,
+                    start_time,
+                    end_time,
+                    room,
+                    teacher_id,
+                    semester_id,
+                    semesters (
+                        semester_name,
+                        school_year
+                    ),
+                    teachers (
+                        first_name,
+                        last_name
+                    ),
+                    schedule_day_mapping (
+                        day_of_week
+                    )
+                `)
                 .eq('schedule_id', scheduleId)
                 .single();
 
@@ -162,6 +245,9 @@ class ScheduleService {
                 teacher_name: data.teachers
                     ? `${data.teachers.first_name} ${data.teachers.last_name}`
                     : 'No Teacher',
+                semester_id: data.semester_id,
+                semester_name: data.semesters?.semester_name,
+                school_year: data.semesters?.school_year,
                 days: data.schedule_day_mapping?.map(d => d.day_of_week) || []
             };
         } catch (error) {
@@ -172,42 +258,58 @@ class ScheduleService {
 
     /**
      * Search schedules with filters
+     * Now supports semester filtering
      */
     async searchSchedules(filters) {
         try {
             let query = supabase
                 .from('course_schedules')
                 .select(`
-        schedule_id,
-        subject_id,
-        course_subjects (
-          subject_code,
-          subject_name
-        ),
-        program_id,
-        year_level,
-        batch,
-        start_time,
-        end_time,
-        room,
-        teacher_id,
-        teachers (
-          first_name,
-          last_name
-        ),
-        schedule_day_mapping (
-          day_of_week
-        )
-      `);
+                    schedule_id,
+                    subject_id,
+                    course_subjects (
+                        subject_code,
+                        subject_name
+                    ),
+                    program_id,
+                    year_level,
+                    batch,
+                    start_time,
+                    end_time,
+                    room,
+                    teacher_id,
+                    semester_id,
+                    semesters (
+                        semester_name,
+                        school_year
+                    ),
+                    teachers (
+                        first_name,
+                        last_name
+                    ),
+                    schedule_day_mapping (
+                        day_of_week
+                    )
+                `);
 
-            // Apply filters (same as before)
+            // Apply filters
             if (filters.subjectId) query = query.eq('subject_id', filters.subjectId);
-            // ... other filters
+            if (filters.programId) query = query.eq('program_id', filters.programId);
+            if (filters.yearLevel) query = query.eq('year_level', filters.yearLevel);
+            if (filters.room) query = query.eq('room', filters.room);
+            if (filters.teacherId) query = query.eq('teacher_id', filters.teacherId);
+            if (filters.semesterId) query = query.eq('semester_id', filters.semesterId);
+            
+            // If no semester filter provided, default to active semester
+            if (!filters.semesterId) {
+                const activeSemester = await this.getActiveSemester();
+                query = query.eq('semester_id', activeSemester.semester_id);
+            }
 
             const { data, error } = await query;
             if (error) throw error;
 
-            // Get program codes (same as before)
+            // Get program codes
             const programIds = [...new Set(data.map(s => s.program_id))];
             const { data: programsData } = await supabase
                 .from('programs')
@@ -216,7 +318,7 @@ class ScheduleService {
             const programMap = {};
             programsData?.forEach(p => programMap[p.program_id] = p.program_code);
 
-            // **Key Change: Do NOT flatten by days. Keep one entry per schedule.**
+            // Format data
             const formattedData = data.map(schedule => ({
                 schedule_id: schedule.schedule_id,
                 subject_code: schedule.course_subjects?.subject_code,
@@ -232,7 +334,9 @@ class ScheduleService {
                 teacher_name: schedule.teachers
                     ? `${schedule.teachers.first_name} ${schedule.teachers.last_name}`
                     : 'No Teacher',
-                // **Consolidate days into an array**
+                semester_id: schedule.semester_id,
+                semester_name: schedule.semesters?.semester_name,
+                school_year: schedule.semesters?.school_year,
                 days: schedule.schedule_day_mapping?.map(d => d.day_of_week) || []
             }));
 
@@ -292,6 +396,7 @@ class ScheduleService {
             if (scheduleData.endTime) updateData.end_time = scheduleData.endTime;
             if (scheduleData.room) updateData.room = scheduleData.room;
             if (scheduleData.teacherId) updateData.teacher_id = scheduleData.teacherId;
+            if (scheduleData.semesterId) updateData.semester_id = scheduleData.semesterId;
 
             const { error } = await supabase
                 .from('course_schedules')

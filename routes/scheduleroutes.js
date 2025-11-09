@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const scheduleController = require('../controllers/schedulecontroller');
 
+// Get active semester
+router.get('/semesters/active', scheduleController.getActiveSemester);
+
 // Create schedule
 router.post('/create', scheduleController.createSchedule);
 

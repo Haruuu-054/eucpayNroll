@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const scheduleController = require('../controllers/schedulecontroller');
+const scheduleController = require('../controllers/scheduleController');
 
 // Get active semester
 router.get('/semesters/active', scheduleController.getActiveSemester);
@@ -24,3 +24,4 @@ router.get('/:id', scheduleController.getScheduleById);
 router.delete('/:id', scheduleController.deleteSchedule);
 
 module.exports = router;
+

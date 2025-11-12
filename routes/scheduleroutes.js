@@ -24,4 +24,3 @@ router.get('/:id', scheduleController.getScheduleById);
 router.delete('/:id', scheduleController.deleteSchedule);
 
 module.exports = router;
-

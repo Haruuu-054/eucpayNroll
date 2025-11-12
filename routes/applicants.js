@@ -94,6 +94,52 @@ function createApplicantsRouter(supabase) {
     });
   });
 
+  // Get applicant status by email
+  router.get("/status", async (req, res) => {
+    try {
+      const { email } = req.query;
+
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: "Email is required.",
+        });
+      }
+
+      const { data, error } = await supabase
+        .from("form_responses")
+        .select("applicant_status")
+        .eq("email", email.toLowerCase())
+        .limit(1);
+
+      if (error) {
+        console.error("Database fetch error:", error);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to fetch applicant status.",
+        });
+      }
+
+      if (!data || data.length === 0) {
+        return res.json({
+          success: false,
+          message: "Applicant not found.",
+        });
+      }
+
+      res.json({
+        success: true,
+        status: data[0].applicant_status,
+      });
+    } catch (err) {
+      console.error("Server error:", err.message);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error.",
+      });
+    }
+  });
+
   // Applicant details by admission ID
   router.get("/:admission_id", async (req, res) => {
     try {
@@ -459,57 +505,57 @@ function createApplicantsRouter(supabase) {
   // ==================== END DOCUMENT ENDPOINTS ====================
 
   // Update applicant status
-  router.patch("/status/:admissionId", async (req, res) => {
-    console.log("🔴 PATCH /status endpoint hit!");
-    console.log("🔴 Params:", req.params);
-    console.log("🔴 Body:", req.body);
-    console.log("🔴 admissionId from params:", req.params.admissionId);
+  // router.patch("/status/:admissionId", async (req, res) => {
+  //   console.log("🔴 PATCH /status endpoint hit!");
+  //   console.log("🔴 Params:", req.params);
+  //   console.log("🔴 Body:", req.body);
+  //   console.log("🔴 admissionId from params:", req.params.admissionId);
 
-    const { admissionId } = req.params;
-    const { status } = req.body;
+  //   const { admissionId } = req.params;
+  //   const { status } = req.body;
 
-    const validStatuses = ["accepted", "rejected", "on-hold", "pending"];
-    if (!validStatuses.includes(status)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid status provided." });
-    }
+  //   const validStatuses = ["accepted", "rejected", "on-hold", "pending"];
+  //   if (!validStatuses.includes(status)) {
+  //     return res
+  //       .status(400)
+  //       .json({ success: false, message: "Invalid status provided." });
+  //   }
 
-    try {
-      const { data, error } = await supabase
-        .from("form_responses")
-        .update({ applicant_status: status })
-        .eq("admission_id", admissionId)
-        .select(); // 👈 force Supabase to return updated row(s)
+  //   try {
+  //     const { data, error } = await supabase
+  //       .from("form_responses")
+  //       .update({ applicant_status: status })
+  //       .eq("admission_id", admissionId)
+  //       .select(); // 👈 force Supabase to return updated row(s)
 
-      console.log("Supabase update result:", { data, error });
+  //     console.log("Supabase update result:", { data, error });
 
-      if (error) {
-        console.error("Supabase update error:", error);
-        return res.status(500).json({
-          success: false,
-          message: "Failed to update applicant status.",
-        });
-      }
+  //     if (error) {
+  //       console.error("Supabase update error:", error);
+  //       return res.status(500).json({
+  //         success: false,
+  //         message: "Failed to update applicant status.",
+  //       });
+  //     }
 
-      if (!data || data.length === 0) {
-        return res
-          .status(404)
-          .json({ success: false, message: "Applicant not found." });
-      }
+  //     if (!data || data.length === 0) {
+  //       return res
+  //         .status(404)
+  //         .json({ success: false, message: "Applicant not found." });
+  //     }
 
-      res.json({
-        success: true,
-        message: "Applicant status updated successfully.",
-        updated: data,
-      });
-    } catch (err) {
-      console.error("Server error:", err);
-      res
-        .status(500)
-        .json({ success: false, message: "Internal server error." });
-    }
-  });
+  //     res.json({
+  //       success: true,
+  //       message: "Applicant status updated successfully.",
+  //       updated: data,
+  //     });
+  //   } catch (err) {
+  //     console.error("Server error:", err);
+  //     res
+  //       .status(500)
+  //       .json({ success: false, message: "Internal server error." });
+  //   }
+  // });
 
   // Get applicant status by email
   router.get("/status", async (req, res) => {
@@ -556,8 +602,8 @@ function createApplicantsRouter(supabase) {
       });
     }
   });
-
-  return router;
+  return router;  
 }
+
 
 module.exports = createApplicantsRouter;

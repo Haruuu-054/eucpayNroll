@@ -114,34 +114,71 @@ router.get("/", async (req, res) => {
   }
 });
 
-  // Route to get total sum of completed payments
-  router.get("/total", async (req, res) => {
-    try {
-      const { data, error } = await supabase
-        .from("payments")
-        .select("amount")
-        .eq("status", "Completed");
+// Route to get total sum of completed payments (optionally filtered by semester)
+router.get("/total", async (req, res) => {
+  try {
+    const { semester_id, use_active } = req.query; // Get semester_id from query params or use_active flag
+    
+    let semesterToFilter = semester_id;
 
-      if (error) {
-        logger.error("Error fetching payment total:", error);
-        return res.status(400).json({ error: error.message });
+    // If use_active is true, fetch the active semester
+    if (use_active === 'true') {
+      const { data: activePeriod, error: periodError } = await supabase
+        .from("enrollment_periods")
+        .select("semester_id")
+        .eq("is_active", true)
+        .order("enrollment_start_date", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (periodError) {
+        logger.error("Error fetching active enrollment period:", periodError);
+        return res.status(400).json({ error: periodError.message });
       }
 
-      // Calculate sum in JavaScript
-      const totalAmount = data.reduce(
-        (sum, payment) => sum + Number(payment.amount),
-        0
-      );
+      if (!activePeriod) {
+        return res.status(404).json({ 
+          error: "No active enrollment period found" 
+        });
+      }
 
-      res.json({
-        total_amount: totalAmount,
-        count: data.length,
-      });
-    } catch (err) {
-      logger.error("Unexpected error:", err);
-      return res.status(500).json({ error: "Internal Server Error" });
+      semesterToFilter = activePeriod.semester_id;
     }
-  });
+    
+    // Build the query
+    let query = supabase
+      .from("payments")
+      .select("amount")
+      .eq("status", "Completed");
+    
+    // Add semester filter if provided
+    if (semesterToFilter) {
+      query = query.eq("for_semester_id", semesterToFilter);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      logger.error("Error fetching payment total:", error);
+      return res.status(400).json({ error: error.message });
+    }
+
+    // Calculate sum in JavaScript
+    const totalAmount = data.reduce(
+      (sum, payment) => sum + Number(payment.amount),
+      0
+    );
+
+    res.json({
+      total_amount: totalAmount,
+      count: data.length,
+      ...(semesterToFilter && { semester_id: semesterToFilter }), // Include semester_id in response if filtered
+    });
+  } catch (err) {
+    logger.error("Unexpected error:", err);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
 
   // Daily payments - last 30 days
   router.get("/daily", async (req, res) => {

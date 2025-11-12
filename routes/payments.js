@@ -8,11 +8,11 @@ function createPaymentsRouter(supabase, logger) {
   // ============================================
   // PAYMENT CONFIGURATION
   // ============================================
-  const PAYMONGO_ENABLED = process.env.PAYMONGO_SECRET_KEY && 
-                           process.env.PAYMONGO_PUBLIC_KEY !== 'offline';
-  
+  const PAYMONGO_ENABLED = process.env.PAYMONGO_SECRET_KEY &&
+    process.env.PAYMONGO_PUBLIC_KEY !== 'offline';
+
   let paymongoClient = null;
-  
+
   if (PAYMONGO_ENABLED) {
     const axios = require('axios');
     paymongoClient = axios.create({
@@ -30,7 +30,7 @@ function createPaymentsRouter(supabase, logger) {
   router.get('/balance/:student_id', async (req, res) => {
     try {
       const { student_id } = req.params;
-      
+
       logger.info('Fetching balance for student', { student_id });
 
       // Get account balance
@@ -80,7 +80,7 @@ function createPaymentsRouter(supabase, logger) {
       let installments = [];
       if (!enrollmentsError && enrollments && enrollments.length > 0) {
         const enrollmentIds = enrollments.map(e => e.enrollment_id);
-        
+
         const { data: installmentsData, error: installmentsError } = await supabase
           .from('payment_installments')
           .select(`
@@ -143,24 +143,24 @@ function createPaymentsRouter(supabase, logger) {
   // ============================================
   router.post('/create-checkout', async (req, res) => {
     try {
-      const { 
-        enrollment_id, 
-        student_id, 
+      const {
+        enrollment_id,
+        student_id,
         payment_type = 'enrollment',
         custom_amount,
         created_by // User ID who initiated the payment (from auth/session)
       } = req.body;
 
       if (!student_id) {
-        return res.status(400).json({ 
-          error: 'Student ID is required' 
+        return res.status(400).json({
+          error: 'Student ID is required'
         });
       }
 
-      logger.info('Creating payment checkout', { 
-        student_id, 
+      logger.info('Creating payment checkout', {
+        student_id,
         payment_type,
-        paymongo_enabled: PAYMONGO_ENABLED 
+        paymongo_enabled: PAYMONGO_ENABLED
       });
 
       // 1. Get or create student account
@@ -231,8 +231,8 @@ function createPaymentsRouter(supabase, logger) {
 
       if (payment_type === 'enrollment') {
         if (!enrollment_id) {
-          return res.status(400).json({ 
-            error: 'Enrollment ID is required for enrollment payments' 
+          return res.status(400).json({
+            error: 'Enrollment ID is required for enrollment payments'
           });
         }
 
@@ -252,8 +252,8 @@ function createPaymentsRouter(supabase, logger) {
 
       } else if (payment_type === 'balance') {
         if (current_balance <= 0) {
-          return res.status(400).json({ 
-            error: 'No outstanding balance to pay' 
+          return res.status(400).json({
+            error: 'No outstanding balance to pay'
           });
         }
 
@@ -267,8 +267,8 @@ function createPaymentsRouter(supabase, logger) {
 
       } else if (payment_type === 'monthly') {
         if (!enrollment_id) {
-          return res.status(400).json({ 
-            error: 'Enrollment ID is required for monthly payments' 
+          return res.status(400).json({
+            error: 'Enrollment ID is required for monthly payments'
           });
         }
 
@@ -282,8 +282,8 @@ function createPaymentsRouter(supabase, logger) {
           .maybeSingle();
 
         if (installmentError || !installment) {
-          return res.status(400).json({ 
-            error: 'No pending installments found' 
+          return res.status(400).json({
+            error: 'No pending installments found'
           });
         }
 
@@ -292,8 +292,8 @@ function createPaymentsRouter(supabase, logger) {
       }
 
       if (!amount || amount <= 0) {
-        return res.status(400).json({ 
-          error: 'Invalid payment amount' 
+        return res.status(400).json({
+          error: 'Invalid payment amount'
         });
       }
 
@@ -329,6 +329,10 @@ function createPaymentsRouter(supabase, logger) {
         try {
           const amountInCentavos = Math.round(amount * 100);
 
+          console.log('✅ PayMongo redirect URLs:', {
+            success_url: `http://127.0.0.1:5501/student/payment.html?status=success&payment_id=${payment_id}`,
+            cancel_url: `http://127.0.0.1:5501/student/payment.htmlstatus=cancelled&payment_id=${payment_id}`
+          });
           const checkoutData = {
             data: {
               attributes: {
@@ -342,8 +346,8 @@ function createPaymentsRouter(supabase, logger) {
                   quantity: 1
                 }],
                 payment_method_types: ['gcash', 'paymaya', 'card', 'grab_pay'],
-                success_url: `${process.env.BASE_URL}/payment/success?payment_id=${payment_id}`,
-                cancel_url: `${process.env.BASE_URL}/payment/cancel?payment_id=${payment_id}`,
+                success_url: `http://localhost:3000/student/payment.html?status=success&payment_id=${payment_id}`,
+                cancel_url: `http://localhost:3000/student/payment.html?status=cancelled&payment_id=${payment_id}`,
                 metadata: {
                   payment_id: payment_id.toString(),
                   enrollment_id: enrollment_id?.toString() || '',
@@ -374,10 +378,10 @@ function createPaymentsRouter(supabase, logger) {
           }]);
 
         } catch (error) {
-          logger.error('PayMongo error', { 
-            error: error.response?.data || error.message 
+          logger.error('PayMongo error', {
+            error: error.response?.data || error.message
           });
-          return res.status(500).json({ 
+          return res.status(500).json({
             error: 'Payment gateway error',
             details: error.response?.data?.errors?.[0]?.detail || error.message
           });
@@ -425,14 +429,14 @@ function createPaymentsRouter(supabase, logger) {
   // ============================================
   router.post('/mock-complete/:payment_id', async (req, res) => {
     if (PAYMONGO_ENABLED) {
-      return res.status(403).json({ 
-        error: 'Mock payments not allowed in production mode' 
+      return res.status(403).json({
+        error: 'Mock payments not allowed in production mode'
       });
     }
 
     try {
       const { payment_id } = req.params;
-      const { 
+      const {
         success = true,
         payment_method = 'mock_payment',
         completed_by // User who completed/verified the payment
@@ -534,8 +538,8 @@ function createPaymentsRouter(supabase, logger) {
           payment_date: new Date().toISOString()
         }]);
 
-        res.json({ 
-          success: true, 
+        res.json({
+          success: true,
           message: 'Mock payment completed successfully',
           payment_id,
           new_balance: Math.max(0, previous_balance - amount),
@@ -546,7 +550,7 @@ function createPaymentsRouter(supabase, logger) {
         // Simulate failed payment
         await supabase
           .from('payments')
-          .update({ 
+          .update({
             status: 'Failed',
             method: payment_method // ✅ Still record the attempted method
           })
@@ -554,15 +558,15 @@ function createPaymentsRouter(supabase, logger) {
 
         await supabase
           .from('payment_transactions')
-          .update({ 
+          .update({
             status: 'failed',
             payment_method: payment_method
           })
           .eq('payment_id', payment_id);
 
-        res.json({ 
-          success: false, 
-          message: 'Mock payment failed' 
+        res.json({
+          success: false,
+          message: 'Mock payment failed'
         });
       }
 
@@ -578,9 +582,9 @@ function createPaymentsRouter(supabase, logger) {
   router.post('/webhook', async (req, res) => {
     try {
       const event = req.body;
-      
-      logger.info('PayMongo webhook received', { 
-        type: event.data?.attributes?.type 
+
+      logger.info('PayMongo webhook received', {
+        type: event.data?.attributes?.type
       });
 
       // Verify webhook signature (recommended in production)
@@ -606,26 +610,26 @@ function createPaymentsRouter(supabase, logger) {
         // ============================================
         // ✅ ADD THIS ROUTING LOGIC HERE
         // ============================================
-        
+
         // Check if this is an enrollment payment
         if (metadata.enrollment_id && metadata.payment_category === 'enrollment') {
-          logger.info('🎓 ENROLLMENT payment detected', { 
+          logger.info('🎓 ENROLLMENT payment detected', {
             payment_id,
-            enrollment_id: metadata.enrollment_id 
+            enrollment_id: metadata.enrollment_id
           });
-          
+
           // Route to enrollment payment handler
           await handleEnrollmentPayment(metadata, supabase, logger);
-          
+
           return res.json({ received: true, type: 'enrollment' });
         }
-        
+
         // ============================================
         // YOUR EXISTING TUITION PAYMENT LOGIC BELOW
         // ============================================
-        
-        logger.info('💰 TUITION payment - using existing logic', { 
-          payment_id 
+
+        logger.info('💰 TUITION payment - using existing logic', {
+          payment_id
         });
 
         // Get payment details
@@ -723,10 +727,10 @@ function createPaymentsRouter(supabase, logger) {
           payment_date: new Date().toISOString()
         }]);
 
-        logger.info('Payment completed via webhook', { 
-          payment_id, 
+        logger.info('Payment completed via webhook', {
+          payment_id,
           payment_method,
-          amount 
+          amount
         });
 
         res.json({ success: true, message: 'Webhook processed' });

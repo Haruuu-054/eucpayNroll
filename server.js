@@ -127,7 +127,7 @@ app.use("/semesters", semestersRouter);
 app.use("/api/enrolled-students", enrolledStudentsRouter);
 app.use("/subjects", subjectsrouter(supabase));
 //app.use("/api/schedules", createSchedulesRouter(supabase));
-app.use("/api/courses", createCoursesRouter(supabase));
+app.use("/courses/schedule", createSchedulesRouter(supabase));
 app.use('/create', createEnrollmentProcessRouter);
 app.use('/enrollment-status', enrollmentstatus(supabase, logger));
 app.use('/enrolled', enrolledcounts(supabase, logger));

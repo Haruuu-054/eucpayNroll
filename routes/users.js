@@ -3,9 +3,8 @@ const express = require("express");
 const bcrypt = require("bcrypt");
 const multer = require("multer");
 const XLSX = require("xlsx");
-const fs = require("fs");
 
-// Configure multer for file uploads
+// Configure multer for file uploads - using memory storage
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
@@ -120,27 +119,37 @@ function createUsersRouter() {
     res.json(data);
   });
 
-router.get('/teachers', async (req, res) => {
-  const { data, error } = await supabase
-    .from('users')
-    .select(`
-      teachers!inner(first_name, last_name, specialization)
-    `)
-    .eq('role_id', 8);  // Filter for teacher role
+  router.get('/teachers', async (req, res) => {
+    const { data, error } = await supabase
+      .from('teachers')
+      .select(`
+        teacher_id,
+        first_name,
+        last_name,
+        middle_name,
+        email,
+        department_id,
+        specialization,
+        users!inner(role_id)
+      `)
+      .eq('users.role_id', 8);
 
-  if (error) {
-    return res.status(400).json({ error: error.message });
-  }
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
 
-  const transformedData = data.map(user => ({
-    first_name: user.teachers.first_name,
-    last_name: user.teachers.last_name,
-    specialization: user.teachers.specialization
-  }));
+    const transformedData = data.map(teacher => ({
+      teacher_id: teacher.teacher_id,
+      first_name: teacher.first_name,
+      last_name: teacher.last_name,
+      middle_name: teacher.middle_name,
+      email: teacher.email,
+      department_id: teacher.department_id,
+      specialization: teacher.specialization
+    }));
 
-  res.json(transformedData);
-});
-
+    res.json(transformedData);
+  });
 
   // GET USER BY ID - GET /:id
   router.get("/:id", async (req, res) => {
@@ -242,35 +251,49 @@ router.get('/teachers', async (req, res) => {
     "/bulk/students/upload",
     upload.single("file"),
     async (req, res) => {
-      let filePath = null;
-
       try {
+        console.log("=== BULK UPLOAD START ===");
+        console.log("File received:", req.file ? "Yes" : "No");
+        
         if (!req.file) {
+          console.error("No file in request");
           return res.status(400).json({ error: "No file uploaded" });
         }
 
-        filePath = req.file.path;
+        console.log("File details:", {
+          originalname: req.file.originalname,
+          mimetype: req.file.mimetype,
+          size: req.file.size,
+          bufferSize: req.file.buffer ? req.file.buffer.length : 0
+        });
+
         const fileExtension = req.file.originalname
           .split(".")
           .pop()
           .toLowerCase();
 
+        console.log("File extension:", fileExtension);
+
         let students = [];
 
-        // Parse based on file type
+        // Parse based on file type - using buffer instead of file path
         if (
           fileExtension === "csv" ||
           fileExtension === "xlsx" ||
           fileExtension === "xls"
         ) {
-          students = parseExcelOrCSV(filePath);
+          console.log("Parsing Excel/CSV from buffer...");
+          students = parseExcelOrCSVFromBuffer(req.file.buffer);
+          console.log("Parsed students:", students.length);
         } else {
+          console.error("Unsupported file format:", fileExtension);
           return res.status(400).json({
             error: "Unsupported file format. Please upload CSV or Excel file.",
           });
         }
 
         if (students.length === 0) {
+          console.error("No valid students found in file");
           return res
             .status(400)
             .json({ error: "No valid student data found in file" });
@@ -282,19 +305,31 @@ router.get('/teachers', async (req, res) => {
         const errors = [];
 
         // Process students sequentially
-        for (let studentData of students) {
+        for (let i = 0; i < students.length; i++) {
+          const studentData = students[i];
+          console.log(`\nProcessing student ${i + 1}/${students.length}:`, {
+            name: `${studentData.first_name} ${studentData.last_name}`,
+            email: studentData.email
+          });
+          
           try {
             const result = await processStudentWithDetails(studentData);
             insertedStudents.push(result);
+            console.log(`✓ Successfully inserted student ${i + 1}`);
           } catch (error) {
+            console.error(`✗ Failed to insert student ${i + 1}:`, error.message);
             errors.push({
-              row: studentData._rowNumber || "unknown",
+              row: studentData._rowNumber || i + 2,
               student: `${studentData.first_name} ${studentData.last_name}`,
               email: studentData.email,
               error: error.message,
             });
           }
         }
+
+        console.log("=== BULK UPLOAD COMPLETE ===");
+        console.log("Inserted:", insertedStudents.length);
+        console.log("Errors:", errors.length);
 
         res.status(201).json({
           inserted: insertedStudents.length,
@@ -303,16 +338,13 @@ router.get('/teachers', async (req, res) => {
           errors,
         });
       } catch (error) {
-        console.error("File upload error:", error);
+        console.error("=== BULK UPLOAD ERROR ===");
+        console.error("Error:", error);
+        console.error("Stack:", error.stack);
         res.status(500).json({
           error: "Internal server error during file processing",
           details: error.message,
         });
-      } finally {
-        // Clean up uploaded file
-        if (filePath && fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
       }
     }
   );
@@ -408,14 +440,19 @@ router.get('/teachers', async (req, res) => {
     }
   });
 
-  // Helper function to parse Excel or CSV file
-  function parseExcelOrCSV(filePath) {
-    const workbook = XLSX.readFile(filePath);
+  // ============ FIXED: Parse from buffer instead of file path ============
+  function parseExcelOrCSVFromBuffer(buffer) {
+    console.log("Parsing workbook from buffer...");
+    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    console.log("Workbook sheets:", workbook.SheetNames);
+    
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
 
     // Convert to JSON
     const rawData = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+    console.log("Raw data rows:", rawData.length);
+    console.log("First row sample:", rawData[0]);
 
     // Transform data to match our structure
     const students = rawData.map((row, index) => {
@@ -440,6 +477,11 @@ router.get('/teachers', async (req, res) => {
         scheme_name: row["Scheme Name"] || row["scheme_name"],
       };
 
+      // Optional: Include student_id if provided
+      if (row["Student ID"] || row["student_id"]) {
+        studentData.student_id = row["Student ID"] || row["student_id"];
+      }
+
       // Parse enrollment data if present
       if (row["Semester ID"] || row["semester_id"]) {
         studentData.enrollment = {
@@ -450,7 +492,6 @@ router.get('/teachers', async (req, res) => {
       }
 
       // Parse subjects data (comma-separated format)
-      // Format: "subject_id:midterm:final:status,subject_id:midterm:final:status"
       const subjectsStr = row["Subjects"] || row["subjects"];
       if (subjectsStr) {
         studentData.subjects = parseSubjectsString(subjectsStr);
@@ -459,7 +500,10 @@ router.get('/teachers', async (req, res) => {
       return studentData;
     });
 
-    return students.filter((s) => s.first_name && s.last_name && s.email);
+    const validStudents = students.filter((s) => s.first_name && s.last_name && s.email);
+    console.log("Valid students after filtering:", validStudents.length);
+    
+    return validStudents;
   }
 
   // Helper function to parse date
@@ -508,7 +552,7 @@ router.get('/teachers', async (req, res) => {
     console.log("\n=== Processing Student ===");
     console.log("Student Data:", JSON.stringify(studentData, null, 2));
 
-    // Required fields validation (password removed from required list)
+    // Required fields validation
     const required = [
       "first_name",
       "last_name",
